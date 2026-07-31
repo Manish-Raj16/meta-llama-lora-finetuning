@@ -1,0 +1,18 @@
+# Core dependencies — CPU-only (no CUDA required)
+torch>=2.1.0
+transformers>=4.44.0
+datasets>=2.20.0
+tokenizers>=0.19.0
+accelerate>=0.30.0
+peft>=0.11.0
+trl>=0.9.0
+safetensors>=0.4.0
+sentencepiece>=0.2.0
+einops>=0.7.0
+huggingface_hub>=0.23.0
+pandas>=2.0.0
+numpy>=1.24.0
+protobuf>=5.29.1,<6.0.0
+
+# NOTE: bitsandbytes is NOT included — it requires CUDA for 4-bit quantisation.
+# The CPU scripts use float32 (train.py) or DistilBERT (train_cpu_fast.py) instead.
