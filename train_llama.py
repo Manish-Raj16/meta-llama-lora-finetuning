@@ -259,7 +259,6 @@ print("\nMilestone 4 Completed Successfully!")
 # =====================================================
 
 print("\nCreating Training Arguments...")
-
 training_args = TrainingArguments(
 
     output_dir=OUTPUT_DIR,
@@ -274,17 +273,19 @@ training_args = TrainingArguments(
 
     logging_steps=10,
 
-    save_strategy="epoch",
+    save_strategy="steps",
 
-    save_total_limit=2,
+    save_steps=500,
+
+    save_total_limit=3,
 
     fp16=False,
 
     bf16=False,
 
     report_to="none",
-    remove_unused_columns=False,
 
+    remove_unused_columns=False,
 )
 
 print("✓ Training Arguments Created")
@@ -345,7 +346,8 @@ print("=" * 60)
 
 start_time = time.time()
 
-trainer.train()
+# trainer.train()
+trainer.train(resume_from_checkpoint="adapter/checkpoint-280")
 
 end_time = time.time()
 

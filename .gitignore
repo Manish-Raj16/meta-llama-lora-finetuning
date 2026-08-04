@@ -1,2 +1,22 @@
-# Byte-compiled / optimized / DLL files
-venv
+# Python
+__pycache__/
+*.pyc
+
+# Virtual Environment
+venv/
+.env
+
+# Model Outputs
+adapter/
+results/
+checkpoints/
+
+# Logs
+*.log
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db

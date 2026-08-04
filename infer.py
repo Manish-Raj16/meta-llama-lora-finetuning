@@ -1,100 +1,167 @@
 """
-Inference Script — Run sentiment predictions after training
-===========================================================
-Usage:
-    # After train_cpu_fast.py (DistilBERT — recommended for CPU):
-    python infer.py --model ./model_fast --text "I love this product!"
-    python infer.py --model ./model_fast --csv ./data/sentiment_dataset.csv
+infer.py
 
-    # After train.py (Llama LoRA adapter):
-    python infer.py --model ./adapter --llama --text "This is terrible."
+Inference using the fine-tuned LoRA adapter
 """
 
-import argparse
-import os
+import torch
+import time
 
-def run_distilbert(model_dir: str, text: str | None, csv_path: str | None):
-    from transformers import pipeline as hf_pipeline
-    pipe = hf_pipeline("text-classification", model=model_dir, device=-1)
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+)
 
-    if text:
-        result = pipe(text, truncation=True, max_length=128)[0]
-        print(f"\nText      : {text}")
-        print(f"Sentiment : {result['label']} (confidence: {result['score']:.3f})")
-
-    if csv_path:
-        import pandas as pd
-        df = pd.read_csv(csv_path)
-        texts = df["text"].tolist()
-        results = pipe(texts, truncation=True, max_length=128, batch_size=16)
-        df["predicted"] = [r["label"] for r in results]
-        df["confidence"] = [round(r["score"], 3) for r in results]
-        out_path = csv_path.replace(".csv", "_predictions.csv")
-        df.to_csv(out_path, index=False)
-        print(f"\nPredictions saved → {out_path}")
-        print(df[["text", "label", "predicted", "confidence"]].head(10).to_string())
+from peft import PeftModel
 
 
-def run_llama(adapter_dir: str, text: str | None):
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline as hf_pipeline
-    from peft import PeftModel
+# =====================================================
+# Configuration
+# =====================================================
 
-    BASE_MODEL = "unsloth/Llama-3.2-3B-Instruct"
-    SYSTEM_PROMPT = (
-        "You are a sentiment analysis expert. "
-        "Given a piece of text, classify its sentiment as exactly one of: "
-        "Positive, Neutral, or Negative. Reply with only that single word."
+MODEL_NAME = "meta-llama/Llama-3.2-1B-Instruct"
+ADAPTER_PATH = "adapter"
+
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+# =====================================================
+# Load Model
+# =====================================================
+
+def load_model():
+
+    print("=" * 60)
+    print("Loading Fine-Tuned Model")
+    print("=" * 60)
+
+    print(f"Device : {DEVICE}")
+
+    print("\nLoading tokenizer...")
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_NAME,
+        use_fast=True,
     )
 
-    print(f"Loading base model {BASE_MODEL} on CPU...")
-    base = AutoModelForCausalLM.from_pretrained(
-        BASE_MODEL, torch_dtype=torch.float32, device_map="cpu", low_cpu_mem_usage=True
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    print("✓ Tokenizer Loaded")
+
+    print("\nLoading base model...")
+
+    base_model = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME,
+        dtype=torch.float32,
+        low_cpu_mem_usage=True,
     )
-    model = PeftModel.from_pretrained(base, adapter_dir)
-    tokenizer = AutoTokenizer.from_pretrained(adapter_dir, trust_remote_code=True)
-    tokenizer.pad_token = tokenizer.eos_token
+
+    print("✓ Base Model Loaded")
+
+    print("\nLoading LoRA Adapter...")
+
+    model = PeftModel.from_pretrained(
+        base_model,
+        ADAPTER_PATH,
+    )
+
+    model.to(DEVICE)
     model.eval()
 
-    pipe = hf_pipeline(
-        "text-generation", model=model, tokenizer=tokenizer,
-        max_new_tokens=10, do_sample=False, repetition_penalty=1.1,
-        eos_token_id=tokenizer.eos_token_id, pad_token_id=tokenizer.eos_token_id,
+    print("✓ Adapter Loaded")
+    print("=" * 60)
+
+    return tokenizer, model
+
+
+# =====================================================
+# Generate Answer
+# =====================================================
+
+def generate_answer(question, tokenizer, model):
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+               "You are an AI assistant specialized in news related to "
+"President Faure Essozimna Gnassingbé.\n\n"
+"Answer questions using only the knowledge learned during fine-tuning.\n"
+"Keep answers factual, concise, and well structured.\n"
+"Do not invent facts.\n"
+"If you are unsure, clearly say that you do not have enough information."
+            ),
+        },
+        {
+            "role": "user",
+            "content": question,
+        },
+    ]
+
+    prompt = tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
     )
 
-    def predict(t: str) -> str:
-        prompt = (
-            f"<|begin_of_text|>"
-            f"<|start_header_id|>system<|end_header_id|>\n{SYSTEM_PROMPT}<|eot_id|>"
-            f"<|start_header_id|>user<|end_header_id|>\n"
-            f"Classify the sentiment of the following text:\n\n\"{t}\"<|eot_id|>"
-            f"<|start_header_id|>assistant<|end_header_id|>\n"
+    inputs = tokenizer(
+        prompt,
+        return_tensors="pt",
+    ).to(DEVICE)
+
+    with torch.no_grad():
+
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=512,
+            do_sample=False,
+            repetition_penalty=1.15,
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id,
         )
-        out = pipe(prompt)[0]["generated_text"]
-        return out.split("<|start_header_id|>assistant<|end_header_id|>")[-1].replace("<|eot_id|>", "").strip()
 
-    if text:
-        pred = predict(text)
-        print(f"\nText      : {text}")
-        print(f"Sentiment : {pred}")
+    generated_tokens = outputs[0][inputs["input_ids"].shape[1]:]
 
+    answer = tokenizer.decode(
+        generated_tokens,
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=False,
+    ).strip()
+
+    return answer
+
+
+# =====================================================
+# Main
+# =====================================================
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, help="Path to saved model/adapter directory")
-    parser.add_argument("--text", default=None, help="Single text to classify")
-    parser.add_argument("--csv", default=None, help="CSV file path for batch prediction")
-    parser.add_argument("--llama", action="store_true", help="Use Llama LoRA adapter mode")
-    args = parser.parse_args()
 
-    if not os.path.exists(args.model):
-        print(f"Error: model directory not found: {args.model}")
-        return
+    tokenizer, model = load_model()
 
-    if args.llama:
-        run_llama(args.model, args.text)
-    else:
-        run_distilbert(args.model, args.text, args.csv)
+    while True:
+
+        question = input("\nQuestion (type 'exit' to quit): ").strip()
+
+        if question.lower() == "exit":
+            print("\nGoodbye!")
+            break
+        start = time.time()
+
+        answer = generate_answer(
+            question,
+            tokenizer,
+            model,
+        )
+        end = time.time()
+
+        print("\n" + "=" * 60)
+        print("Answer")
+        print("=" * 60)
+        print(answer)
+        
+        print("\nInference Time : {:.2f} seconds".format(end - start))
 
 
 if __name__ == "__main__":
